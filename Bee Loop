@@ -1,0 +1,124 @@
+#include <Adafruit_BME280.h>
+#include <Encoder.h>
+#include <Adafruit_MQTT.h>
+#include "Adafruit_MQTT/Adafruit_MQTT_SPARK.h"
+#include "Adafruit_MQTT/Adafruit_MQTT.h"
+#include "credentials.h"
+#include "Adafruit_GFX.h"
+#include "Adafruit_SSD1306.h"
+#define OLED_RESET D4
+#define XPOS 0
+#define YPOS 1
+#define DELTAY 2                      //OLED
+Adafruit_SSD1306 display(OLED_RESET);
+Adafruit_BME280 bme;
+Encoder myEnc(D6,D8);// Diodes on D6 "IN" and D8 "OUT" labeled Encoder, able to count things going in and out
+TCPClient TheClient; 
+Adafruit_MQTT_SPARK mqtt(&TheClient,AIO_SERVER,AIO_SERVERPORT,AIO_USERNAME,AIO_KEY); 
+// Adafruit_MQTT_Subscribe subFeed = Adafruit_MQTT_Subscribe(&mqtt, AIO_USERNAME "/feeds/push");
+Adafruit_MQTT_Publish pubFeed = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/feedz");  //Air
+Adafruit_MQTT_Publish pubFeedW = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/water"); //Water
+Adafruit_MQTT_Publish pubFeedF = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/temp");
+Adafruit_MQTT_Publish pubFeedH = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/humid");
+Adafruit_MQTT_Publish pubFeedM = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/press");
+Adafruit_MQTT_Publish pubFeedC = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/count");
+Adafruit_MQTT_Publish pubFeedG = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/hertz");
+Adafruit_MQTT_Publish pubFeedh = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/AR");
+int lastTime,raw,rf;
+int tempC,tempF,pressPA,humidRH,inHg;
+int z,x;
+static int hiveCount;
+const int AIR=A3;   // ambient air 200-400, 99%IPA 2000
+const int WATER=A2;
+const int HPRF=A0;
+const int RF=A5;
+bool status;
+
+SYSTEM_MODE(AUTOMATIC);  // needs auto to publish
+
+void MQTT_connect();
+bool MQTT_ping();
+
+void setup() {
+  Wire.begin();
+  Serial.begin(9600);
+  status=bme.begin(0x76);
+  if(status==false){
+      Serial.printf("BME280 at address 0x%02X failed to start\n",0x76);
+    }
+  pinMode(AIR,INPUT);   //  "z" MP-503 Air Quality Sensor v1.3
+  pinMode(WATER,INPUT);   // "x" water present reads 2500, no water 3100+ depending on humidity
+  pinMode(HPRF,INPUT);  // High Pass RF > 0.3GHz 0-4095
+  pinMode(RF,INPUT);  // raw RF 0-4095
+  display.begin(SSD1306_SWITCHCAPVCC,0x3C);
+  display.clearDisplay();
+  display.display();
+  myEnc.write(hiveCount);
+}
+
+void loop() {
+
+MQTT_connect();
+MQTT_ping();
+
+  tempC=bme.readTemperature();//deg C
+  tempF=(tempC*1.8)+32;       // convert to F
+  pressPA=bme.readPressure(); //pascals
+  inHg=pressPA*0.0002953;     // inches of Hg
+  humidRH=bme.readHumidity(); //%RH
+  raw=analogRead(RF);
+  rf=analogRead(HPRF);
+  hiveCount=(myEnc.read())/4;
+  x=analogRead(WATER);
+  z=analogRead(AIR);
+
+  if((millis()-lastTime > 30000)) {
+    if(mqtt.Update()) {
+      pubFeed.publish(z); // Air
+      pubFeedW.publish(x);  // water
+      pubFeedF.publish(tempF);
+      pubFeedH.publish(humidRH);
+      pubFeedM.publish(inHg);
+      pubFeedC.publish(hiveCount);
+      pubFeedG.publish(rf);
+      pubFeedh.publish(raw);
+      }
+    lastTime = millis();
+    }
+
+  display.setRotation(0);
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(0,0);
+  display.printf("Temp=%uF\nPressure=%u\nHumidity=%u\nhiveCount   %i\nHighPass= %i\nraw rf    %i\nAQ = %i\nW=%i",tempF,inHg,humidRH,hiveCount,rf,raw,z,x);
+// display.printf("Temperature is %uF\nPressure is %u\nHumidity is %u\n\nhiveCount   %i\n\nHighPass rf  %i\nraw rf    %i",tempF,inHg,humidRH,hiveCount,rf,raw);
+  display.display();
+  display.clearDisplay();
+
+}
+void MQTT_connect() {
+  int8_t ret;
+  // Return if already connected.
+  if (mqtt.connected()) {
+    return; }
+  Serial.print("Connecting to MQTT... ");
+  while ((ret = mqtt.connect()) != 0) { // connect will return 0 for connected
+       Serial.printf("Error Code %s\n",mqtt.connectErrorString(ret));
+       Serial.printf("Retrying MQTT connection in 5 seconds...\n");
+       mqtt.disconnect();
+       delay(5000);  // wait 5 seconds and try again
+}
+  Serial.printf("MQTT Connected!\n");
+}
+bool MQTT_ping() {
+  static unsigned int last;
+  bool pingStatus;
+  if ((millis()-last)>120000) {
+      Serial.printf("Pinging MQTT \n");
+      pingStatus = mqtt.ping();
+      if(!pingStatus) {
+        Serial.printf("Disconnecting \n");
+        mqtt.disconnect();}
+      last = millis();
+  } return pingStatus;
+}
